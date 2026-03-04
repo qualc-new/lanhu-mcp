@@ -876,6 +876,8 @@ black lanhu_mcp_server.py
 
 - 提交 Issue: [GitHub Issues](https://github.com/dsphper/lanhu-mcp/issues)
 - 邮件: dsphper@gmail.com
+**扫码加入微信群交流**
+<p align="center"><img src="images/wechat.jpg" alt="微信群二维码" width="400" /></p>
 
 ## 🗺️ 路线图
 
