@@ -84,6 +84,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Version History
 
+### [1.4.0] - 2026-03-26
+
+#### Changed
+- 文档与配置示例持续同步（README、元数据、格式整理）
+- 更新 README 中微信群二维码图片（`images/wechat.jpg`）
+
 ### [1.1.0] - 2026-02-27
 
 #### 设计图分析能力升级（Design Analysis）
