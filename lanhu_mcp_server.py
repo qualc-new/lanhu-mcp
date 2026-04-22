@@ -205,6 +205,192 @@ button:active {
 """
 
 
+# ==================== 微信小程序 UI Chrome 过滤 ====================
+
+# 状态栏检测关键词（className 或图层名中包含这些词即视为状态栏）
+_STATUSBAR_KEYWORDS = ['statusBar', 'status_bar', 'statusBarBg', 'status_bar_bg',
+                        '状态栏', 'systemBar']
+# 胶囊按钮检测关键词
+_CAPSULE_KEYWORDS = ['capsule', '胶囊', 'capsuleButton', '胶囊按钮',
+                      'navCapsule', 'capsuleBtn', 'capsule_bg']
+# 原生导航栏检测关键词
+_NATIVE_HEADER_KEYWORDS = ['navigationBar', 'navigation_bar', 'navBar', 'nav_bar',
+                            '原生导航', 'nativeHeader', '系统导航栏']
+# 返回按钮关键词（用于判断是否为原生头）
+_BACK_BTN_KEYWORDS = ['back', '返回', 'goBack', 'navBack', 'backBtn', '返回按钮']
+# 首页按钮关键词（用于判断是否为原生头）
+_HOME_BTN_KEYWORDS = ['home', '首页', 'goHome', 'homeBtn']
+
+
+def _match_keywords(name: str, keywords: list) -> bool:
+    """判断名称是否匹配关键词列表"""
+    if not name:
+        return False
+    name_lower = name.lower()
+    return any(kw.lower() in name_lower for kw in keywords)
+
+
+def _has_wechat_time_text(node: dict) -> bool:
+    """检测节点是否包含微信状态栏时间文本 (如 '9:41', '12:30')"""
+    if node.get('type') == 'lanhutext':
+        text = (node.get('data', {}).get('value') or
+                node.get('props', {}).get('text') or '')
+        # 匹配时间格式: 9:41, 12:30, 09:41 等
+        if re.match(r'^\d{1,2}:\d{2}$', str(text).strip()):
+            return True
+    return False
+
+
+def _has_battery_or_signal_icon(node: dict) -> bool:
+    """检测节点是否包含电池/信号图标"""
+    if node.get('type') != 'lanhuimage':
+        return False
+    class_name = (node.get('props', {}).get('className') or '').lower()
+    icon_keywords = ['battery', 'signal', 'wifi', '运营商', 'carrier',
+                      '电池', '信号', '网络', 'mobileIcon', 'carrierLabel']
+    return any(kw in class_name for kw in icon_keywords)
+
+
+def _is_statusbar_node(node: dict) -> bool:
+    """
+    判断节点是否为微信状态栏。
+    判断逻辑（满足任一）:
+    1. 自身名称匹配状态栏关键词
+    2. 子节点包含时间文本 + 电池/信号图标
+    """
+    class_name = node.get('props', {}).get('className', '')
+    node_name = node.get('name', '')
+
+    # 直接名称匹配
+    if _match_keywords(class_name, _STATUSBAR_KEYWORDS):
+        return True
+    if _match_keywords(node_name, _STATUSBAR_KEYWORDS):
+        return True
+
+    # 子节点包含状态栏特征
+    children = node.get('children', [])
+    has_time = False
+    has_icon = False
+    for child in children:
+        if _has_wechat_time_text(child):
+            has_time = True
+        if _has_battery_or_signal_icon(child):
+            has_icon = True
+    if has_time and has_icon:
+        return True
+
+    # 检查子节点的子节点
+    for child in children:
+        for grandchild in child.get('children', []):
+            if _has_wechat_time_text(grandchild):
+                has_time = True
+            if _has_battery_or_signal_icon(grandchild):
+                has_icon = True
+    if has_time and has_icon:
+        return True
+
+    return False
+
+
+def _is_capsule_node(node: dict) -> bool:
+    """
+    判断节点是否为微信胶囊按钮。
+    判断逻辑（满足任一）:
+    1. 自身名称匹配胶囊关键词
+    2. className 包含 capsule
+    """
+    class_name = node.get('props', {}).get('className', '')
+    node_name = node.get('name', '')
+    return (_match_keywords(class_name, _CAPSULE_KEYWORDS) or
+            _match_keywords(node_name, _CAPSULE_KEYWORDS))
+
+
+def _is_native_header_node(node: dict) -> bool:
+    """
+    判断节点是否为微信原生导航栏。
+    判断逻辑（满足任一）:
+    1. 自身名称匹配原生导航栏关键词
+    2. 同时包含返回/首页按钮 + 标题文字
+    """
+    class_name = node.get('props', {}).get('className', '')
+    node_name = node.get('name', '')
+
+    # 直接名称匹配
+    if _match_keywords(class_name, _NATIVE_HEADER_KEYWORDS):
+        return True
+    if _match_keywords(node_name, _NATIVE_HEADER_KEYWORDS):
+        return True
+
+    # 检查是否包含返回按钮 + 标题（原生头特征）
+    children = node.get('children', [])
+    has_back_or_home = False
+    has_title = False
+    for child in children:
+        child_name = (child.get('props', {}).get('className', '') or '').lower()
+        child_label = (child.get('name', '') or '').lower()
+        if _match_keywords(child_name, _BACK_BTN_KEYWORDS) or _match_keywords(child_label, _BACK_BTN_KEYWORDS):
+            has_back_or_home = True
+        if _match_keywords(child_name, _HOME_BTN_KEYWORDS) or _match_keywords(child_label, _HOME_BTN_KEYWORDS):
+            has_back_or_home = True
+        # 标题文字通常是文本节点
+        if child.get('type') == 'lanhutext':
+            text = (child.get('data', {}).get('value') or
+                    child.get('props', {}).get('text') or '')
+            if text and len(str(text).strip()) > 0:
+                has_title = True
+
+    return has_back_or_home and has_title
+
+
+def _filter_wechat_miniprogram_chrome(node: dict) -> dict:
+    """
+    过滤微信小程序 UI Chrome 元素。
+    
+    过滤规则:
+    1. 状态栏（顶部时间、电量、网络图标区域）→ 整组移除
+    2. 自定义导航栏中的胶囊按钮 → 移除
+    3. 原生导航栏（含返回按钮+标题）→ 整组移除
+    
+    Args:
+        node: 蓝湖 Schema 节点
+    Returns:
+        过滤后的节点（深拷贝，不修改原始数据）
+    """
+    if not node or not isinstance(node, dict):
+        return node
+
+    # 深拷贝避免修改原始数据
+    result = dict(node)
+
+    # 检查当前节点是否需要过滤
+    if _is_statusbar_node(node):
+        # 整个状态栏节点移除
+        return {}
+
+    if _is_capsule_node(node):
+        # 胶囊按钮移除
+        return {}
+
+    if _is_native_header_node(node):
+        # 整个原生导航栏节点移除
+        return {}
+
+    # 递归处理子节点
+    children = node.get('children', [])
+    if children:
+        filtered_children = []
+        for child in children:
+            filtered = _filter_wechat_miniprogram_chrome(child)
+            if filtered:  # 空节点表示被过滤掉了
+                filtered_children.append(filtered)
+        result['children'] = filtered_children
+
+    return result
+
+
+# ==================== 微信小程序 UI Chrome 过滤结束 ====================
+
+
 def _camel_to_kebab(s: str) -> str:
     """驼峰命名转换为CSS短横线命名"""
     return re.sub(r'([A-Z])', lambda m: f'-{m.group(1).lower()}', s)
@@ -505,17 +691,27 @@ def _generate_html(
     return f'{spaces}<{tag} class="{all_classes}"></{tag}>'
 
 
-def convert_lanhu_to_html(json_data: dict) -> str:
+def convert_lanhu_to_html(json_data: dict, filter_miniprogram_chrome: bool = True) -> str:
     """
     将蓝湖设计图JSON转换为HTML+CSS
     
     Args:
         json_data: 蓝湖设计图Schema JSON
+        filter_miniprogram_chrome: 是否过滤微信小程序 UI Chrome 元素
+            （状态栏/胶囊按钮/原生导航栏），默认True。
+            启用后自动过滤：
+            - 状态栏（顶部时间、电量、网络图标区域）
+            - 自定义导航栏中的胶囊按钮
+            - 原生导航栏（含返回按钮+标题的整组）
         
     Returns:
         完整的HTML字符串（含嵌入式CSS）
     """
     css_rules = {}
+    
+    # 过滤微信小程序 UI Chrome 元素
+    if filter_miniprogram_chrome:
+        json_data = _filter_wechat_miniprogram_chrome(json_data)
     
     # 生成CSS
     _generate_css(json_data, css_rules)
@@ -680,6 +876,15 @@ def _extract_design_tokens(sketch_data: dict) -> str:
             return
 
         name = obj.get('name', '')
+
+        # 过滤微信小程序 UI Chrome
+        if _match_keywords(name, _STATUSBAR_KEYWORDS):
+            return
+        if _match_keywords(name, _NATIVE_HEADER_KEYWORDS):
+            return
+        if _match_keywords(name, _CAPSULE_KEYWORDS):
+            return
+
         current_path = _build_path(parent_path, name)
 
         if _is_high_risk(obj):
@@ -787,8 +992,79 @@ def _oc_to_css(oc_code: str) -> str:
     return ';'.join(css)
 
 
+def _sketch_is_miniprogram_chrome(layer: dict, board_h: float) -> str:
+    """
+    检测 Sketch 图层是否为微信小程序 UI Chrome 元素。
+    
+    Returns:
+        "statusbar" / "capsule" / "native_header" / "" (非 Chrome)
+    """
+    name = (layer.get('name', '') or '').lower()
+    top = layer.get('top', 0) or 0
+    left = layer.get('left', 0) or 0
+    w = layer.get('width', 0) or 0
+    h = layer.get('height', 0) or 0
+    ltype = layer.get('type', '')
+
+    # 1. 名称匹配状态栏
+    if _match_keywords(name, _STATUSBAR_KEYWORDS):
+        return "statusbar"
+
+    # 2. 名称匹配原生导航栏
+    if _match_keywords(name, _NATIVE_HEADER_KEYWORDS):
+        return "native_header"
+
+    # 3. 名称匹配胶囊按钮
+    if _match_keywords(name, _CAPSULE_KEYWORDS):
+        return "capsule"
+
+    # 4. 位置检测：贴近顶部且较窄 → 可能是状态栏/原生头
+    if top < 100:  # 设计稿 2x 下，100px ≈ 50pt
+        # 状态栏：全宽或接近全宽，高度较小
+        if board_h > 0:
+            width_ratio = w / board_h if board_h else 0
+        else:
+            width_ratio = 0
+        if w > 200 and h < 100 and left < 50:
+            # 检查是否包含时间/电池/信号文本层
+            sub_layers = layer.get('layers', [])
+            has_time = False
+            has_icon = False
+            for sl in sub_layers:
+                sl_name = (sl.get('name', '') or '').lower()
+                if _match_keywords(sl_name, ['time', 'clock', '时间']):
+                    has_time = True
+                if _match_keywords(sl_name, ['battery', 'signal', 'wifi', '电池', '信号']):
+                    has_icon = True
+                if sl.get('type') == 'textLayer' and re.match(r'^\d{1,2}:\d{2}$', (sl.get('textInfo', {}).get('text', '') or '').strip()):
+                    has_time = True
+            if has_time and has_icon:
+                return "statusbar"
+
+            # 原生头：全宽，包含返回按钮
+            if w > 300:
+                for sl in sub_layers:
+                    sl_name = (sl.get('name', '') or '').lower()
+                    if _match_keywords(sl_name, _BACK_BTN_KEYWORDS) or _match_keywords(sl_name, _HOME_BTN_KEYWORDS):
+                        return "native_header"
+
+        # 5. 胶囊按钮检测：右侧，小宽度，圆角
+        if w < 200 and h < 100 and left > 200:
+            # 检查是否有圆角（胶囊特征）
+            path = layer.get('path') or {}
+            radii = path.get('pathComponents', [{}])[0].get('origin', {}).get('radii')
+            if radii and any(v > 0 for v in radii):
+                return "capsule"
+            # 或者名称包含相关关键词
+            if any(kw in name for kw in ['btn', 'button', '按钮', 'icon', '图标']):
+                return "capsule"
+
+    return ""
+
+
 def convert_sketch_to_html(sketch_data: dict, design_scale: float = 2.0,
-                           design_img_url: str = "") -> str:
+                           design_img_url: str = "",
+                           filter_miniprogram_chrome: bool = True) -> str:
     """
     将 Sketch/PSD JSON 转换为 HTML+CSS。
     策略：设计原图 background-image 裁剪 + 文字/切图叠加 + data-css 标注。
@@ -899,6 +1175,19 @@ def convert_sketch_to_html(sketch_data: dict, design_scale: float = 2.0,
                 return
             if layer.get('visible') is False:
                 return
+
+            # 过滤微信小程序 UI Chrome
+            if filter_miniprogram_chrome:
+                chrome_type = _sketch_is_miniprogram_chrome(layer, board_h)
+                if chrome_type == "statusbar" or chrome_type == "native_header":
+                    # 状态栏/原生头：跳过整个组
+                    return
+                elif chrome_type == "capsule":
+                    # 胶囊按钮：跳过该图层，但仍遍历子层
+                    for child in reversed(layer.get('layers', [])):
+                        _flatten(child)
+                    return
+
             w = layer.get('width', 0) or 0
             h = layer.get('height', 0) or 0
             if w == 0 and h == 0:
@@ -925,6 +1214,12 @@ def convert_sketch_to_html(sketch_data: dict, design_scale: float = 2.0,
     layer_annotations = []
 
     for idx, L in enumerate(layers):
+        # 二次过滤：防止漏网的 Chrome 元素
+        if filter_miniprogram_chrome:
+            chrome_type = _sketch_is_miniprogram_chrome(L, board_h)
+            if chrome_type:
+                continue
+
         cls = f"el{idx + 1}"
         ltype = L.get('type', '')
         name = L.get('name', '')
@@ -1232,6 +1527,15 @@ def _extract_full_annotations_from_sketch(sketch_data: dict, design_scale: float
             return
 
         name = layer.get('name', '?')
+
+        # 过滤微信小程序 UI Chrome
+        if _match_keywords(name, _STATUSBAR_KEYWORDS):
+            return
+        if _match_keywords(name, _NATIVE_HEADER_KEYWORDS):
+            return
+        if _match_keywords(name, _CAPSULE_KEYWORDS):
+            return
+
         ltype = layer.get('type', '?')
         w = layer.get('width', 0) or 0
         h = layer.get('height', 0) or 0
@@ -6270,6 +6574,521 @@ async def lanhu_get_members(
         "total": len(collaborators),
         "collaborators": collaborators
     }
+
+
+# ==================== 导出 HTML+CSS 到项目目录 ====================
+
+# 项目根目录（脚本所在目录的父级，或者通过环境变量指定）
+PROJECT_ROOT = Path(os.getenv("PROJECT_ROOT", Path(__file__).parent))
+DOCS_OUTPUT_DIR = PROJECT_ROOT / "docs" / "lanhu-design"
+
+
+async def _export_prototype_to_html(
+    extractor: LanhuExtractor,
+    url: str,
+    output_dir: Path,
+    page_names: Union[str, List[str]],
+    minify: bool,
+    version_id: str = None,
+) -> dict:
+    """
+    导出原型文档页面为本地 HTML + 资源文件。
+    下载 Axure 导出资源 → 用 Playwright 渲染 → 提取完整 HTML → 保存到目标目录。
+    """
+    params = extractor.parse_url(url)
+
+    # 1. 获取页面列表
+    pages_result = await extractor.get_pages_list(url)
+    if pages_result.get('status') != 'success':
+        return {"status": "error", "message": pages_result.get('message', 'Failed to get pages list')}
+
+    all_pages = pages_result['pages']
+
+    # 解析目标页面
+    if isinstance(page_names, str) and page_names.lower() == 'all':
+        target_pages = [p['name'] for p in all_pages]
+    elif isinstance(page_names, str):
+        target_pages = [p['name'] for p in all_pages if p['name'] == page_names]
+    else:
+        target_pages = [p['name'] for p in all_pages if p['name'] in page_names]
+
+    if not target_pages:
+        return {"status": "error", "message": "No matching pages found"}
+
+    # 2. 下载资源
+    resource_dir = output_dir / "_resources"
+    resource_dir.mkdir(parents=True, exist_ok=True)
+    await extractor.download_resources(url, str(resource_dir), force_update=False)
+
+    # 3. 启动本地 HTTP 服务器
+    import http.server, socketserver, threading, time, random
+    abs_resource = str(resource_dir.absolute())
+
+    # 查找 HTML 文件并建立映射
+    html_files = {}
+    for f in resource_dir.glob("*.html"):
+        html_files[f.stem] = f.name
+
+    exported = []
+    errors = []
+
+    for page_name in target_pages:
+        if page_name not in html_files:
+            errors.append({"page": page_name, "error": "HTML file not found in downloaded resources"})
+            continue
+
+        try:
+            safe_name = re.sub(r'[^\w\s-]', '_', page_name)
+            page_output = output_dir / f"{safe_name}.html"
+            assets_output = output_dir / safe_name
+
+            port = random.randint(8900, 8999)
+            handler = lambda *args, **kwargs: http.server.SimpleHTTPRequestHandler(
+                *args, directory=abs_resource, **kwargs
+            )
+            httpd = socketserver.TCPServer(("", port), handler)
+            thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+            thread.start()
+            time.sleep(0.5)
+
+            try:
+                async with async_playwright() as p:
+                    browser = await p.chromium.launch(headless=True)
+                    context = await browser.new_context(viewport={'width': VIEWPORT_WIDTH, 'height': VIEWPORT_HEIGHT})
+                    page = await context.new_page()
+
+                    await page.goto(f"http://localhost:{port}/{html_files[page_name]}",
+                                    wait_until='networkidle', timeout=30000)
+                    await page.wait_for_timeout(2000)
+
+                    # 提取完整 HTML
+                    full_html = await page.content()
+
+                    # 替换 iframe 的 src 为本地文件引用
+                    for stem, fname in html_files.items():
+                        local_name = re.sub(r'[^\w\s-]', '_', stem) + '.html'
+                        full_html = full_html.replace(
+                            f"http://localhost:{port}/{fname}",
+                            f"./{local_name}"
+                        )
+
+                    if minify:
+                        full_html = minify_html(full_html)
+
+                    page_output.write_text(full_html, encoding='utf-8')
+
+                    # 下载页面使用的图片资源到本地 assets 目录
+                    assets_output.mkdir(exist_ok=True)
+                    img_urls = await page.evaluate("""() => {
+                        const imgs = Array.from(document.querySelectorAll('img'));
+                        return imgs.map(img => img.src).filter(s => s.startsWith('http'));
+                    }""")
+                    for img_url in set(img_urls):
+                        try:
+                            img_resp = await extractor.client.get(img_url)
+                            if img_resp.status_code == 200:
+                                ext = os.path.splitext(urlparse(img_url).path)[1] or '.png'
+                                img_name = hashlib.md5(img_url.encode()).hexdigest()[:8] + ext
+                                (assets_output / img_name).write_bytes(img_resp.content)
+                                # 替换 HTML 中的远程图片 URL 为本地路径
+                                full_html = full_html.replace(img_url, f"./{safe_name}/{img_name}")
+                        except Exception:
+                            pass
+
+                    # 重新写入（含本地图片路径）
+                    if minify:
+                        full_html = minify_html(full_html)
+                    page_output.write_text(full_html, encoding='utf-8')
+
+                    await browser.close()
+
+                    exported.append({
+                        "page": page_name,
+                        "html_path": str(page_output),
+                        "assets_dir": str(assets_output),
+                    })
+            finally:
+                httpd.shutdown()
+                thread.join(timeout=2)
+
+        except Exception as e:
+            errors.append({"page": page_name, "error": str(e)})
+
+    return {
+        "status": "success" if exported else "partial",
+        "output_dir": str(output_dir),
+        "exported": exported,
+        "errors": errors,
+    }
+
+
+async def _export_design_to_html(
+    extractor: LanhuExtractor,
+    url: str,
+    output_dir: Path,
+    design_names: Union[str, List[str]],
+    minify: bool,
+) -> dict:
+    """
+    导出 UI 设计稿为 HTML + CSS 代码文件。
+    从 Design Schema 转换为 HTML，附带本地图片资源。
+    """
+    params = extractor.parse_url(url)
+
+    # 1. 获取设计图列表
+    designs_data = await _get_designs_internal(extractor, url)
+    if designs_data.get('status') != 'success':
+        return {"status": "error", "message": designs_data.get('message', 'Failed to get designs')}
+
+    all_designs = designs_data['designs']
+
+    # 解析目标设计
+    if isinstance(design_names, str) and design_names.lower() == 'all':
+        target_designs = all_designs
+    elif isinstance(design_names, str) and design_names.isdigit():
+        idx = int(design_names)
+        target_designs = [d for d in all_designs if d.get('index') == idx]
+    elif isinstance(design_names, str):
+        target_designs = [d for d in all_designs if d['name'] == design_names]
+    else:
+        target_designs = [d for d in all_designs if d['name'] in design_names]
+
+    if not target_designs:
+        return {"status": "error", "message": "No matching designs found"}
+
+    exported = []
+    errors = []
+
+    for design in target_designs:
+        try:
+            safe_name = re.sub(r'[^\w\s-]', '_', design['name'])
+            design_output = output_dir / f"{safe_name}.html"
+            assets_output = output_dir / safe_name
+            assets_output.mkdir(parents=True, exist_ok=True)
+
+            # 获取 Schema 并转换为 HTML
+            schema_json = await extractor.get_design_schema_json(
+                design['id'], params['team_id'], params['project_id']
+            )
+            html_code = convert_lanhu_to_html(schema_json)
+            html_code, image_mapping = _localize_image_urls(html_code, design['name'])
+
+            # 下载图片资源到本地 assets 目录
+            for local_hint, remote_url in image_mapping.items():
+                try:
+                    img_resp = await extractor.client.get(remote_url)
+                    if img_resp.status_code == 200:
+                        parsed = urlparse(remote_url)
+                        ext = os.path.splitext(parsed.path)[1] or '.png'
+                        img_name = re.sub(r'[^\w\s-]', '_', design['name']) + "_" + hashlib.md5(remote_url.encode()).hexdigest()[:6] + ext
+                        img_path = assets_output / img_name
+                        img_path.write_bytes(img_resp.content)
+                        html_code = html_code.replace(remote_url, f"./{safe_name}/{img_name}")
+                except Exception:
+                    pass
+
+            # 提取 Design Tokens 作为注释
+            try:
+                sketch_json = await extractor.get_sketch_json(
+                    design['id'], params['team_id'], params['project_id']
+                )
+                tokens = _extract_design_tokens(sketch_json)
+                html_code = f"<!-- Design Tokens:\n{tokens}\n-->\n" + html_code
+            except Exception:
+                pass
+
+            if minify:
+                html_code = minify_html(html_code)
+
+            design_output.write_text(html_code, encoding='utf-8')
+
+            exported.append({
+                "design": design['name'],
+                "html_path": str(design_output),
+                "assets_dir": str(assets_output),
+            })
+        except Exception as e:
+            errors.append({"design": design['name'], "error": str(e)})
+
+    return {
+        "status": "success" if exported else "partial",
+        "output_dir": str(output_dir),
+        "exported": exported,
+        "errors": errors,
+    }
+
+
+@mcp.tool()
+async def lanhu_export_to_html(
+    url: Annotated[str, "蓝湖URL。含docId=原型文档，不含docId=设计项目。例: https://lanhuapp.com/web/#/item/project/product?tid=xxx&pid=xxx&docId=xxx"],
+    target_names: Annotated[Union[str, List[str]], "页面名或设计图名列表。'all'表示导出全部。原型文档传页面名，设计项目传设计图名"],
+    minify: Annotated[bool, "是否压缩HTML（默认True）。False保留可读性"] = True,
+    output_dir: Annotated[Optional[str], "自定义输出目录。默认 docs/lanhu-design/<project_name>/"] = None,
+    ctx: Context = None,
+) -> dict:
+    """
+    将蓝湖原型/设计稿导出为 HTML+CSS 代码文件，保存到本地项目目录。
+
+    USE THIS WHEN user says: 导出HTML, 转HTML, 生成代码文件, 落地到项目, 保存到docs, 导出为HTML文件
+    DO NOT USE for: 查看设计图, 分析需求, 看切图 (use other lanhu tools instead)
+
+    Output: HTML文件 + 图片资源子目录，保存在 docs/lanhu-design/<project_name>/ 下。
+    每个页面/设计图对应一个 .html 文件。
+
+    Returns:
+        导出结果，包含成功列表、失败列表和输出目录路径
+    """
+    user_name, user_role = get_user_info(ctx) if ctx else ('匿名', '未知')
+    project_id = get_project_id_from_url(url)
+    if project_id:
+        store = MessageStore(project_id)
+        store.record_collaborator(user_name, user_role)
+
+    extractor = LanhuExtractor()
+    try:
+        params = extractor.parse_url(url)
+
+        # 确定输出目录
+        if output_dir:
+            target_dir = Path(output_dir)
+        else:
+            # 获取项目名作为子目录名
+            try:
+                metadata = await _fetch_metadata_from_url(url)
+                proj_name = re.sub(r'[^\w\s-]', '_', metadata.get('project_name', project_id[:8]))
+            except Exception:
+                proj_name = project_id[:8] if project_id else 'lanhu-export'
+            target_dir = DOCS_OUTPUT_DIR / proj_name
+
+        target_dir.mkdir(parents=True, exist_ok=True)
+
+        doc_id = params.get('doc_id')
+        if doc_id:
+            # 原型文档 → 渲染导出
+            version_id = params.get('version_id')
+            return await _export_prototype_to_html(
+                extractor, url, target_dir, target_names, minify, version_id
+            )
+        else:
+            # 设计项目 → Schema 转 HTML
+            return await _export_design_to_html(
+                extractor, url, target_dir, target_names, minify
+            )
+    finally:
+        await extractor.close()
+
+
+
+# ==================== 一键设计稿 → 代码（组合工具） ====================
+
+@mcp.tool()
+async def lanhu_design_to_code(
+    url: Annotated[str, "蓝湖设计项目URL（不含docId）。例: https://lanhuapp.com/web/#/item/project/stage?tid=xxx&pid=xxx。如需处理全部设计图，可直接说'全部'或'all'"],
+    target_names: Annotated[Union[str, List[str]], "设计图名。'all'=全部。也可传数字（第几个）或精确名称"] = "all",
+    include_annotations: Annotated[bool, "是否提取完整标注数据（尺寸/间距/颜色/字体/阴影等）。默认True"] = True,
+    include_html: Annotated[bool, "是否生成HTML+CSS代码。默认True"] = True,
+    include_tokens: Annotated[bool, "是否提取Design Tokens设计变量。默认True"] = True,
+    minify: Annotated[bool, "是否压缩HTML输出。默认True"] = True,
+    output_dir: Annotated[Optional[str], "自定义输出目录。默认 docs/lanhu-design/<project_name>/"] = None,
+    ctx: Context = None,
+) -> dict:
+    """
+    【一键完成】蓝湖设计稿 → 获取标注 + 导出HTML+CSS代码 → 保存文件
+    
+    USE THIS WHEN user says: 
+    - "帮我用mcp看看这个设计稿" + 蓝湖链接
+    - "设计稿转代码" / "设计稿导出" / "设计图转HTML"
+    - "看看这个设计稿并导出"
+    - "设计稿标注+代码"
+    只需一句话，自动完成全部流程。
+    
+    自动流程：
+    1. 获取设计图列表（自动识别目标）
+    2. 提取设计标注（尺寸、间距、颜色、字体、阴影、圆角等）
+    3. 生成 HTML+CSS 代码（从蓝湖 Schema 转换，与官方导出一致）
+    4. 下载所有图片资源到本地 assets 目录
+    5. 导出 Design Tokens（设计变量/颜色/字体等）
+    6. 全部保存到 docs/lanhu-design/<项目名>/ 目录
+    
+    Returns:
+        完整结果，包含标注数据、HTML路径、图片映射、Design Tokens
+    """
+    user_name, user_role = get_user_info(ctx) if ctx else ('匿名', '未知')
+    project_id = get_project_id_from_url(url)
+    if project_id:
+        store = MessageStore(project_id)
+        store.record_collaborator(user_name, user_role)
+
+    extractor = LanhuExtractor()
+    try:
+        params = extractor.parse_url(url)
+
+        # 确定输出目录
+        if output_dir:
+            target_dir = Path(output_dir)
+        else:
+            try:
+                metadata = await _fetch_metadata_from_url(url)
+                proj_name = re.sub(r'[^\w\s\-]', '_', metadata.get('project_name', project_id[:8]))
+            except Exception:
+                proj_name = project_id[:8] if project_id else 'lanhu-export'
+            target_dir = DOCS_OUTPUT_DIR / proj_name
+
+        target_dir.mkdir(parents=True, exist_ok=True)
+
+        # ===== Step 1: 获取设计图列表 =====
+        designs_data = await _get_designs_internal(extractor, url)
+        if designs_data.get('status') != 'success':
+            return {"status": "error", "message": designs_data.get('message', '获取设计图列表失败')}
+
+        all_designs = designs_data['designs']
+
+        # 解析目标设计
+        if isinstance(target_names, str) and target_names.lower() in ('all', '全部'):
+            target_designs = all_designs
+        elif isinstance(target_names, str) and target_names.isdigit():
+            idx = int(target_names)
+            target_designs = [d for d in all_designs if d.get('index') == idx]
+        elif isinstance(target_names, str):
+            # 精确匹配或子串匹配
+            target_designs = [d for d in all_designs if target_names in d['name']]
+            if not target_designs:
+                # 模糊匹配
+                for d in all_designs:
+                    if target_names.lower() in d['name'].lower():
+                        target_designs.append(d)
+                        break
+        else:
+            target_designs = [d for d in all_designs if d['name'] in target_names]
+
+        if not target_designs:
+            return {
+                "status": "error",
+                "message": "未找到匹配的设计图",
+                "available_designs": [d['name'] for d in all_designs]
+            }
+
+        # ===== Step 2-N: 逐个处理设计图 =====
+        results = []
+
+        for design in target_designs:
+            result = {
+                "design_name": design['name'],
+                "design_index": design.get('index'),
+            }
+            safe_name = re.sub(r'[^\w\s\-]', '_', design['name'])
+            design_dir = target_dir / safe_name
+            design_dir.mkdir(parents=True, exist_ok=True)
+
+            # --- 获取 Schema JSON ---
+            try:
+                schema_json = await extractor.get_design_schema_json(
+                    design['id'], params['team_id'], params['project_id']
+                )
+            except Exception as e:
+                result["schema_error"] = str(e)
+                results.append(result)
+                continue
+
+            # --- Step 2: 提取标注数据 ---
+            if include_annotations:
+                try:
+                    html_code_full = convert_lanhu_to_html(schema_json)
+                    html_code_full, image_mapping = _localize_image_urls(html_code_full, design['name'])
+                    result["annotations"] = {
+                        "html_generated": True,
+                        "image_resources": {local_path: remote_url for local_path, remote_url in image_mapping.items()},
+                    }
+                except Exception as e:
+                    result["annotations_error"] = str(e)
+
+            # --- Step 3: 生成 HTML+CSS 并保存 ---
+            if include_html:
+                try:
+                    html_code = convert_lanhu_to_html(schema_json)
+                    html_code, image_mapping = _localize_image_urls(html_code, design['name'])
+
+                    # 下载图片到本地
+                    downloaded_images = []
+                    for local_hint, remote_url in image_mapping.items():
+                        try:
+                            img_resp = await extractor.client.get(remote_url)
+                            if img_resp.status_code == 200:
+                                parsed_url = urlparse(remote_url)
+                                ext = os.path.splitext(parsed_url.path)[1] or '.png'
+                                img_hash = hashlib.md5(remote_url.encode()).hexdigest()[:6]
+                                img_name = f"{safe_name}_{img_hash}{ext}"
+                                img_path = design_dir / img_name
+                                img_path.write_bytes(img_resp.content)
+                                html_code = html_code.replace(remote_url, f"./{img_name}")
+                                downloaded_images.append({
+                                    "local_path": f"./{img_name}",
+                                    "original_url": remote_url,
+                                    "size_kb": round(len(img_resp.content) / 1024, 1),
+                                })
+                        except Exception:
+                            pass
+
+                    if minify:
+                        html_code = minify_html(html_code)
+
+                    html_file = design_dir / f"{safe_name}.html"
+                    html_file.write_text(html_code, encoding='utf-8')
+
+                    result["html"] = {
+                        "file_path": str(html_file),
+                        "downloaded_images": downloaded_images,
+                    }
+                except Exception as e:
+                    result["html_error"] = str(e)
+
+            # --- Step 4: 提取 Design Tokens ---
+            if include_tokens:
+                try:
+                    sketch_json = await extractor.get_sketch_json(
+                        design['id'], params['team_id'], params['project_id']
+                    )
+                    tokens_text = _extract_design_tokens(sketch_json)
+                    tokens_file = design_dir / f"{safe_name}_tokens.txt"
+                    tokens_file.write_text(tokens_text, encoding='utf-8')
+                    result["design_tokens"] = {
+                        "file_path": str(tokens_file),
+                        "preview": tokens_text[:500] + ("..." if len(tokens_text) > 500 else ""),
+                    }
+                except Exception as e:
+                    result["tokens_error"] = str(e)
+
+            results.append(result)
+
+        # ===== 构建总结 =====
+        success_count = len([r for r in results if not r.get('schema_error')])
+        total_count = len(results)
+
+        summary = {
+            "status": "success",
+            "project_name": designs_data.get('project_name', ''),
+            "total_designs": total_count,
+            "successful": success_count,
+            "output_dir": str(target_dir),
+            "results": results,
+            "usage_hint": f"""
+📂 输出目录: {target_dir}
+每个设计图包含:
+  - {safe_name}.html        → HTML+CSS 代码（可直接用浏览器打开）
+  - {safe_name}_tokens.txt  → Design Tokens 设计变量
+  - 图片资源（已下载到本地）
+
+💡 下一步建议:
+  1. 用浏览器打开 HTML 文件预览效果
+  2. 参考 tokens.txt 获取颜色/字体/间距等设计变量
+  3. 在项目中使用 HTML 中的 CSS 属性值（直接复用，不要修改）
+            """.strip()
+        }
+
+        return summary
+
+    finally:
+        await extractor.close()
 
 
 if __name__ == "__main__":
